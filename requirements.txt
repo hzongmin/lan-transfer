@@ -1,0 +1,4 @@
+# Direct dependencies recorded from the existing V5 packaging environment.
+qrcode[pil]==8.2
+Pillow==11.3.0
+cryptography==41.0.7
