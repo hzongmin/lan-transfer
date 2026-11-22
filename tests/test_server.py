@@ -43,6 +43,49 @@ class ServerTest(unittest.TestCase):
         conn.close()
         return response.status, dict(response.getheaders()), data
 
+    def request_json(self, method, path, payload):
+        body = json.dumps(payload).encode("utf-8")
+        return self.request(
+            method,
+            path,
+            body=body,
+            headers={"Content-Length": str(len(body)), "Content-Type": "application/json"},
+        )
+
+    def connect_phone(self):
+        self.state.register_client("127.0.0.1", "Phone Browser")
+
+    def test_text_requires_active_connection(self):
+        status, _, body = self.request("GET", "/api/text?code=123456")
+
+        self.assertEqual(status, 403)
+        self.assertIn(b"Connection expired", body)
+
+    def test_phone_can_set_and_read_latest_text(self):
+        self.connect_phone()
+
+        status, _, body = self.request_json(
+            "POST", "/api/text?code=123456", {"text": "https://example.com"}
+        )
+
+        self.assertEqual(status, 200)
+        written = json.loads(body.decode("utf-8"))
+        self.assertEqual(written["text"], "https://example.com")
+        self.assertEqual(written["source"], "phone")
+
+        status, _, body = self.request("GET", "/api/text?code=123456")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode("utf-8")), written)
+
+    def test_text_rejects_empty_and_oversized_payloads(self):
+        self.connect_phone()
+
+        status, _, _ = self.request_json("POST", "/api/text?code=123456", {"text": " "})
+        self.assertEqual(status, 400)
+
+        status, _, _ = self.request_json("POST", "/api/text?code=123456", {"text": "x" * 20001})
+        self.assertEqual(status, 413)
+
     def test_files_requires_access_code(self):
         status, _, body = self.request("GET", "/api/files?code=000000")
 
@@ -174,6 +217,25 @@ class ServerTest(unittest.TestCase):
         self.assertIn("downloadFrame", html)
         self.assertNotIn("link.href = `/api/download/", html)
 
+    def test_phone_page_renders_shared_text_as_plain_text(self):
+        status, _, body = self.request("GET", "/")
+
+        self.assertEqual(status, 200)
+        html = body.decode("utf-8")
+        self.assertIn('id="textInput"', html)
+        self.assertIn('id="latestText"', html)
+        self.assertIn("latestText.textContent", html)
+        self.assertNotIn("latestText.innerHTML", html)
+        self.assertIn("function isSafeHttpUrl", html)
+
+    def test_phone_page_explains_android_file_picker_cold_start(self):
+        status, _, body = self.request("GET", "/")
+
+        self.assertEqual(status, 200)
+        html = body.decode("utf-8")
+        self.assertIn("安卓首次打开文件选择界面可能需要 5～10 秒", html)
+
 
 if __name__ == "__main__":
     unittest.main()
+

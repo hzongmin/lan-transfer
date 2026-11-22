@@ -16,6 +16,13 @@ class UploadTooLarge(ValueError):
     pass
 
 
+MAX_SHARED_TEXT_CHARS = 20_000
+
+
+class InvalidSharedText(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class SharedFile:
     id: str
@@ -35,6 +42,22 @@ class ConnectedClient:
     ip: str
     device: str
     last_seen: float
+
+
+@dataclass(frozen=True)
+class SharedText:
+    text: str = ""
+    version: int = 0
+    source: str = ""
+    updated_at: float = 0.0
+
+    def json(self) -> dict[str, object]:
+        return {
+            "text": self.text,
+            "version": self.version,
+            "source": self.source,
+            "updatedAt": self.updated_at,
+        }
 
 
 class TransferState:
@@ -58,6 +81,7 @@ class TransferState:
         self._pending: dict[str, SharedFile] = {}
         self._shared: dict[str, SharedFile] = {}
         self._clients: dict[str, ConnectedClient] = {}
+        self._latest_text = SharedText()
         self._lock = threading.RLock()
         self._event_callback = event_callback
         self.library = SharedLibrary()
@@ -224,6 +248,27 @@ class TransferState:
                 for item in sorted(self._clients.values(), key=lambda client: client.last_seen, reverse=True)
             ]
 
+    def latest_text_json(self) -> dict[str, object]:
+        with self._lock:
+            return self._latest_text.json()
+
+    def set_latest_text(self, text: str, source: str) -> dict[str, object]:
+        normalized = str(text).strip()
+        if not normalized:
+            raise InvalidSharedText("Text is empty")
+        if len(normalized) > MAX_SHARED_TEXT_CHARS:
+            raise InvalidSharedText(f"Text exceeds {MAX_SHARED_TEXT_CHARS} characters")
+        with self._lock:
+            self._latest_text = SharedText(
+                text=normalized,
+                version=self._latest_text.version + 1,
+                source=source if source in {"desktop", "phone"} else "device",
+                updated_at=self._clock(),
+            )
+            payload = self._latest_text.json()
+        self.add_event(f"Text updated from {payload['source']}")
+        return payload
+
     def _drop_expired_clients(self) -> None:
         now = self._clock()
         expired = [
@@ -288,3 +333,4 @@ def _safe_resume_id(resume_id: str) -> str:
     if len(cleaned) < 12:
         raise ValueError("Invalid resume id")
     return cleaned
+

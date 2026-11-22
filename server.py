@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from encryption_utils import STREAM_VERSION, create_stream_receiver, decrypt_from_peer, decrypt_stream_chunk
 from hash_utils import sha256_file
-from transfer_state import TransferState, UploadTooLarge
+from transfer_state import InvalidSharedText, MAX_SHARED_TEXT_CHARS, TransferState, UploadTooLarge
 from web_ui import PHONE_PAGE
 from media_server import LibraryRequestMixin
 
@@ -37,6 +37,13 @@ class RequestHandler(LibraryRequestMixin, BaseHTTPRequestHandler):
                 return
             payload = {"files": self.transfer_state.shared_files_json()}
             self._send_json(HTTPStatus.OK, payload)
+            return
+        if parsed.path == "/api/text":
+            if not self._authorized(parsed):
+                return
+            if not self._connected():
+                return
+            self._send_json(HTTPStatus.OK, self.transfer_state.latest_text_json())
             return
         if parsed.path.startswith("/api/download/"):
             if not self._authorized(parsed):
@@ -78,6 +85,13 @@ class RequestHandler(LibraryRequestMixin, BaseHTTPRequestHandler):
             if not self._connected():
                 return
             self._upload(parsed)
+            return
+        if parsed.path == "/api/text":
+            if not self._authorized(parsed):
+                return
+            if not self._connected():
+                return
+            self._set_text()
             return
         if parsed.path == "/api/upload-resume":
             if not self._authorized(parsed):
@@ -168,6 +182,22 @@ class RequestHandler(LibraryRequestMixin, BaseHTTPRequestHandler):
 
         self.transfer_state.record_upload(destination, written)
         self._send_json(HTTPStatus.CREATED, {"name": destination.name, "size": written})
+
+    def _set_text(self) -> None:
+        try:
+            payload = self._read_json_body(MAX_SHARED_TEXT_CHARS * 4 + 1024)
+            text = payload["text"]
+            if not isinstance(text, str):
+                raise TypeError("Text must be a string")
+            result = self.transfer_state.set_latest_text(text, "phone")
+        except InvalidSharedText as exc:
+            status = HTTPStatus.REQUEST_ENTITY_TOO_LARGE if "exceeds" in str(exc) else HTTPStatus.BAD_REQUEST
+            self._send_json(status, {"error": str(exc)})
+            return
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid text request"})
+            return
+        self._send_json(HTTPStatus.OK, result)
 
     def _resume_status(self) -> None:
         try:
@@ -494,3 +524,4 @@ def _simple_qr_svg(text: str) -> str:
 <text x="130" y="125" text-anchor="middle" font-family="Arial" font-size="14" fill="#111">Open URL</text>
 <text x="130" y="148" text-anchor="middle" font-family="Arial" font-size="11" fill="#333">{escaped}</text>
 </svg>"""
+

@@ -14,7 +14,7 @@ from discovery import DiscoveryService
 from network_utils import choose_preferred_address, discover_addresses
 from remote_client import RemoteSendError, connect_remote, normalize_base_url, send_files_to_remote
 from server import create_http_server
-from transfer_state import TransferState
+from transfer_state import InvalidSharedText, TransferState
 from shared_library import SharedLibrary
 
 try:
@@ -33,7 +33,7 @@ BaseTk = TkinterDnD.Tk if TkinterDnD is not None else tk.Tk
 class DesktopApp(BaseTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("文件传送V5")
+        self.title("文件传送V5.1")
         self.geometry("800x680")
         self.minsize(720, 620)
 
@@ -65,6 +65,9 @@ class DesktopApp(BaseTk):
         self.nearby_device_var = tk.StringVar(value="")
         self.remote_encrypted_var = tk.BooleanVar(value=False)
         self.remote_encryption_status_var = tk.StringVar(value="普通传送：未启用加密，断点续传、SHA256 校验、自动重试已启用")
+        self.text_status_var = tk.StringVar(value="程序启动后暂无文字")
+        self.latest_text_version = 0
+        self.latest_text_value = ""
         self.connected_remote_url = ""
         self.connected_remote_code = ""
         self.qr_image = None
@@ -156,6 +159,26 @@ class DesktopApp(BaseTk):
         self.library_list.pack(fill="x", padx=8, pady=(0, 8))
         ttk.Label(library, text="手机连接后进入“电脑共享目录”；文件留在电脑，视频按需读取。目录会自动记住。", wraplength=650).pack(anchor="w", padx=8, pady=(0, 8))
         self._refresh_library_folders()
+
+        text_transfer = ttk.LabelFrame(content, text="文字速传")
+        text_transfer.pack(fill="x", padx=14, pady=6)
+        ttk.Label(text_transfer, text="输入文字或链接；发送后，已连接的手机可直接复制").pack(anchor="w", padx=8, pady=(8, 4))
+        self.text_input = tk.Text(text_transfer, height=4, wrap="word")
+        self.text_input.pack(fill="x", padx=8, pady=4)
+        text_actions = ttk.Frame(text_transfer)
+        text_actions.pack(fill="x", padx=8, pady=4)
+        ttk.Button(text_actions, text="粘贴剪贴板", command=self._paste_text).pack(side="left")
+        ttk.Button(text_actions, text="发送文字", command=self._send_text).pack(side="left", padx=(8, 0))
+        ttk.Label(text_transfer, text="最新收到的文字").pack(anchor="w", padx=8, pady=(8, 4))
+        self.latest_text_box = tk.Text(text_transfer, height=4, wrap="word", state="disabled")
+        self.latest_text_box.pack(fill="x", padx=8, pady=4)
+        received_actions = ttk.Frame(text_transfer)
+        received_actions.pack(fill="x", padx=8, pady=(4, 8))
+        self.copy_latest_text_button = ttk.Button(received_actions, text="复制收到内容", command=self._copy_latest_text)
+        self.copy_latest_text_button.pack(side="left")
+        self.copy_latest_text_button.state(["disabled"])
+        ttk.Label(received_actions, textvariable=self.text_status_var).pack(side="left", padx=(10, 0))
+        self._render_latest_text(self.state.latest_text_json())
 
         share = ttk.LabelFrame(content, text="电脑发给手机")
         share.pack(fill="x", padx=14, pady=6)
@@ -345,6 +368,60 @@ class DesktopApp(BaseTk):
         self.state.clear_shared_files()
         self._refresh_shared_list()
 
+    def _paste_text(self) -> None:
+        try:
+            text = self.clipboard_get()
+        except tk.TclError:
+            self.text_status_var.set("剪贴板里没有可粘贴的文字")
+            return
+        self.text_input.delete("1.0", tk.END)
+        self.text_input.insert("1.0", text)
+        self.text_status_var.set("已粘贴，点击“发送文字”即可传送")
+
+    def _send_text(self) -> None:
+        text = self.text_input.get("1.0", "end-1c")
+        try:
+            payload = self.state.set_latest_text(text, "desktop")
+        except InvalidSharedText as exc:
+            if "empty" in str(exc):
+                self.text_status_var.set("请输入文字")
+            else:
+                self.text_status_var.set("文字不能超过 20,000 个字符")
+            return
+        self.text_input.delete("1.0", tk.END)
+        self._render_latest_text(payload)
+        self.text_status_var.set("文字已发送，手机可直接复制")
+
+    def _copy_latest_text(self) -> None:
+        if not self.latest_text_value:
+            self.text_status_var.set("暂无文字")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(self.latest_text_value)
+        self.text_status_var.set("最新文字已复制")
+
+    def _render_latest_text(self, payload: dict[str, object]) -> None:
+        text = str(payload.get("text") or "")
+        self.latest_text_value = text
+        self.latest_text_version = int(payload.get("version") or 0)
+        self.latest_text_box.configure(state="normal")
+        self.latest_text_box.delete("1.0", tk.END)
+        self.latest_text_box.insert("1.0", text or "暂无文字")
+        self.latest_text_box.configure(state="disabled")
+        if text:
+            self.copy_latest_text_button.state(["!disabled"])
+        else:
+            self.copy_latest_text_button.state(["disabled"])
+
+    def _refresh_latest_text(self) -> None:
+        payload = self.state.latest_text_json()
+        version = int(payload.get("version") or 0)
+        if version == self.latest_text_version:
+            return
+        self._render_latest_text(payload)
+        if payload.get("source") == "phone":
+            self.text_status_var.set("已收到手机发送的最新文字")
+
     def _refresh_shared_list(self) -> None:
         self.shared_list.delete(0, tk.END)
         pending = self.state.pending_files_json()
@@ -472,6 +549,7 @@ class DesktopApp(BaseTk):
 
     def _on_event(self, message: str) -> None:
         self.after(0, lambda: self._append_log(message))
+        self.after(0, self._refresh_latest_text)
 
     def _append_log(self, message: str) -> None:
         self.log_list.insert(tk.END, message)
@@ -552,3 +630,4 @@ def describe_paths(paths) -> str:
 def main() -> None:
     app = DesktopApp()
     app.mainloop()
+

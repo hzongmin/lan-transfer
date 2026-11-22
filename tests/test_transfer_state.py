@@ -5,10 +5,44 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from transfer_state import TransferState, UploadTooLarge
+from transfer_state import InvalidSharedText, TransferState, UploadTooLarge
 
 
 class TransferStateTest(unittest.TestCase):
+    def test_latest_text_starts_empty_and_is_not_persistent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = TransferState(receive_dir=root)
+
+            self.assertEqual(first.latest_text_json()["text"], "")
+            first.set_latest_text("hello", "desktop")
+
+            second = TransferState(receive_dir=root)
+            self.assertEqual(second.latest_text_json()["text"], "")
+            self.assertEqual(second.latest_text_json()["version"], 0)
+
+    def test_latest_text_overwrites_and_increments_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = TransferState(receive_dir=Path(tmp), clock=lambda: 1234.5)
+
+            first = state.set_latest_text(" first ", "desktop")
+            second = state.set_latest_text("https://example.com", "phone")
+
+            self.assertEqual(first["text"], "first")
+            self.assertEqual(second["text"], "https://example.com")
+            self.assertEqual(second["version"], first["version"] + 1)
+            self.assertEqual(second["source"], "phone")
+            self.assertEqual(second["updatedAt"], 1234.5)
+
+    def test_latest_text_rejects_empty_and_too_long(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = TransferState(receive_dir=Path(tmp))
+
+            with self.assertRaises(InvalidSharedText):
+                state.set_latest_text("   ", "desktop")
+            with self.assertRaises(InvalidSharedText):
+                state.set_latest_text("x" * 20001, "phone")
+
     def test_access_code_is_six_digits(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = TransferState(receive_dir=Path(tmp), max_upload_bytes=1024)
@@ -118,3 +152,4 @@ class TransferStateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
